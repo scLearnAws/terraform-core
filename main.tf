@@ -1,29 +1,6 @@
-terraform {
-  required_version = ">= 1.5.0"
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 6.0"
-    }
-  }
-    backend "s3" {
-        bucket         = "tf-state-core-c5da5b20ef07a4023ead994443" 
-        key            = "terraform-core/terraform.tfstate"
-        region         = "eu-central-1"
-        use_lockfile = true
-        encrypt      = true
-    }
-}
-
-provider "aws" {
-  region = "eu-central-1"
-}
-
-# 1. S3 Bucket for Remote State Storage
 resource "aws_s3_bucket" "terraform_state" {
   bucket_prefix = "tf-state-core-"
 
-  # Protect against accidental bucket deletion
   lifecycle {
     prevent_destroy = true
   }
@@ -34,7 +11,6 @@ resource "aws_s3_bucket" "terraform_state" {
   }
 }
 
-# Enable versioning so we can recover past states if corrupted
 resource "aws_s3_bucket_versioning" "terraform_state_versioning" {
   bucket = aws_s3_bucket.terraform_state.id
   versioning_configuration {
@@ -42,7 +18,6 @@ resource "aws_s3_bucket_versioning" "terraform_state_versioning" {
   }
 }
 
-# Enable server-side encryption by default
 resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state_crypto" {
   bucket = aws_s3_bucket.terraform_state.id
 
@@ -53,7 +28,6 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state_c
   }
 }
 
-# Explicitly block all public access to the state bucket
 resource "aws_s3_bucket_public_access_block" "terraform_state_public_block" {
   bucket                  = aws_s3_bucket.terraform_state.id
   block_public_acls       = true
@@ -62,10 +36,9 @@ resource "aws_s3_bucket_public_access_block" "terraform_state_public_block" {
   restrict_public_buckets = true
 }
 
-# 2. DynamoDB Table for State Locking
 resource "aws_dynamodb_table" "terraform_locks" {
   name         = "terraform-state-locks"
-  billing_mode = "PAY_PER_REQUEST" # Free Tier friendly
+  billing_mode = "PAY_PER_REQUEST"
   hash_key     = "LockID"
 
   attribute {
@@ -79,13 +52,70 @@ resource "aws_dynamodb_table" "terraform_locks" {
   }
 }
 
-# Outputs to copy into our backend configuration
-output "s3_bucket_name" {
-  value       = aws_s3_bucket.terraform_state.id
-  description = "Name of the S3 bucket created for Terraform state"
+# 1. Custom VPC
+resource "aws_vpc" "main" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = {
+    Name = "${var.environment}-vpc"
+  }
 }
 
-output "dynamodb_table_name" {
-  value       = aws_dynamodb_table.terraform_locks.name
-  description = "Name of the DynamoDB table created for Terraform state locking"
+# 2. Internet Gateway (for Public Subnets)
+resource "aws_internet_gateway" "gw" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "${var.environment}-igw"
+  }
+}
+
+# 3. Public Subnets (Span 2 Availability Zones)
+resource "aws_subnet" "public" {
+  count                   = length(var.public_subnet_cidrs)
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = var.public_subnet_cidrs[count.index]
+  availability_zone       = var.availability_zones[count.index]
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "${var.environment}-public-subnet-${count.index + 1}"
+    Type = "Public"
+  }
+}
+
+# 4. Private Subnets (Span 2 Availability Zones)
+resource "aws_subnet" "private" {
+  count             = length(var.private_subnet_cidrs)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.private_subnet_cidrs[count.index]
+  availability_zone = var.availability_zones[count.index]
+
+  tags = {
+    Name = "${var.environment}-private-subnet-${count.index + 1}"
+    Type = "Private"
+  }
+}
+
+# 5. Public Route Table (Routes 0.0.0.0/0 to Internet Gateway)
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.gw.id
+  }
+
+  tags = {
+    Name = "${var.environment}-public-rt"
+  }
+}
+
+# 6. Associate Public Subnets with Public Route Table
+resource "aws_route_table_association" "public" {
+  count          = length(aws_subnet.public)
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
 }
