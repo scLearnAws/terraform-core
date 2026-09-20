@@ -119,3 +119,116 @@ resource "aws_route_table_association" "public" {
   subnet_id      = aws_subnet.public[count.index].id
   route_table_id = aws_route_table.public.id
 }
+
+# ==========================================
+# 3. NAT Gateway & Private Routing 
+# ==========================================
+
+# 1. Allocate Elastic IP for NAT Gateway
+resource "aws_eip" "nat" {
+  domain     = "vpc"
+  depends_on = [aws_internet_gateway.gw]
+
+  tags = {
+    Name = "${var.environment}-nat-eip"
+  }
+}
+
+# 2. Deploy NAT Gateway in Public Subnet 1
+resource "aws_nat_gateway" "nat" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public[0].id
+
+  tags = {
+    Name = "${var.environment}-nat-gw"
+  }
+
+  depends_on = [aws_internet_gateway.gw]
+}
+
+# 3. Private Route Table (Routes 0.0.0.0/0 to NAT Gateway)
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.nat.id
+  }
+
+  tags = {
+    Name = "${var.environment}-private-rt"
+  }
+}
+
+# 4. Associate Private Subnets with Private Route Table
+resource "aws_route_table_association" "private" {
+  count          = length(aws_subnet.private)
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
+}
+
+# ==========================================
+# 4. Security Groups 
+# ==========================================
+
+# Public Web / Load Balancer Security Group
+resource "aws_security_group" "web_sg" {
+  name        = "${var.environment}-web-sg"
+  description = "Allow inbound HTTP/HTTPS traffic from anywhere"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description = "Allow HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Allow HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "Allow all outbound traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.environment}-web-sg"
+  }
+}
+
+# Private Application / Database Security Group
+resource "aws_security_group" "app_sg" {
+  name        = "${var.environment}-app-sg"
+  description = "Allow inbound traffic only from Web Security Group"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description     = "Allow traffic from Web SG"
+    from_port       = 8080
+    to_port         = 8080
+    protocol        = "tcp"
+    security_groups = [aws_security_group.web_sg.id]
+  }
+
+  egress {
+    description = "Allow all outbound traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.environment}-app-sg"
+  }
+}
