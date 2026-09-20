@@ -36,22 +36,6 @@ resource "aws_s3_bucket_public_access_block" "terraform_state_public_block" {
   restrict_public_buckets = true
 }
 
-resource "aws_dynamodb_table" "terraform_locks" {
-  name         = "terraform-state-locks"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "LockID"
-
-  attribute {
-    name = "LockID"
-    type = "S"
-  }
-
-  tags = {
-    Environment = "Core-State"
-    ManagedBy   = "Terraform"
-  }
-}
-
 # 1. Custom VPC
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
@@ -121,53 +105,6 @@ resource "aws_route_table_association" "public" {
 }
 
 # ==========================================
-# 3. NAT Gateway & Private Routing 
-# ==========================================
-
-# 1. Allocate Elastic IP for NAT Gateway
-resource "aws_eip" "nat" {
-  domain     = "vpc"
-  depends_on = [aws_internet_gateway.gw]
-
-  tags = {
-    Name = "${var.environment}-nat-eip"
-  }
-}
-
-# 2. Deploy NAT Gateway in Public Subnet 1
-resource "aws_nat_gateway" "nat" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public[0].id
-
-  tags = {
-    Name = "${var.environment}-nat-gw"
-  }
-
-  depends_on = [aws_internet_gateway.gw]
-}
-
-# 3. Private Route Table (Routes 0.0.0.0/0 to NAT Gateway)
-resource "aws_route_table" "private" {
-  vpc_id = aws_vpc.main.id
-
-  route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.nat.id
-  }
-
-  tags = {
-    Name = "${var.environment}-private-rt"
-  }
-}
-
-# 4. Associate Private Subnets with Private Route Table
-resource "aws_route_table_association" "private" {
-  count          = length(aws_subnet.private)
-  subnet_id      = aws_subnet.private[count.index].id
-  route_table_id = aws_route_table.private.id
-}
-
-# ==========================================
 # 4. Security Groups 
 # ==========================================
 
@@ -191,14 +128,6 @@ resource "aws_security_group" "web_sg" {
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "Allow SSH from anywhere"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.admin_ip] # my ip
   }
 
   egress {
@@ -228,13 +157,6 @@ resource "aws_security_group" "app_sg" {
     security_groups = [aws_security_group.web_sg.id]
   }
 
-  ingress {
-    description     = "Allow SSH from Web SG"
-    from_port       = 22
-    to_port         = 22
-    protocol        = "tcp"
-    security_groups = [aws_security_group.web_sg.id]
-  }
 
   egress {
     description = "Allow all outbound traffic"
@@ -253,29 +175,13 @@ resource "aws_security_group" "app_sg" {
 # 5. Compute Tier 
 # ==========================================
 
-# 1. Fetch Latest Amazon Linux 2023 AMI
-data "aws_ami" "amazon_linux_2023" {
-  most_recent = true
-  owners      = ["amazon"]
-
-  filter {
-    name   = "name"
-    values = ["al2023-ami-2023.*-x86_64"]
-  }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
-}
-
 # 2. Public Web Server
 resource "aws_instance" "web" {
-  ami                    = data.aws_ami.amazon_linux_2023.id
+  ami                    = var.ami_id
   instance_type          = "t3.micro"
   subnet_id              = aws_subnet.public[0].id
   vpc_security_group_ids = [aws_security_group.web_sg.id]
-  key_name               = aws_key_pair.deployer.key_name
+  iam_instance_profile   = aws_iam_instance_profile.ssm_profile.name
 
   user_data = <<-EOF
               #!/bin/bash
@@ -291,39 +197,15 @@ resource "aws_instance" "web" {
   }
 }
 
-# 3. Private App Server
-resource "aws_instance" "app" {
-  ami                    = data.aws_ami.amazon_linux_2023.id
-  instance_type          = "t3.micro"
-  subnet_id              = aws_subnet.private[0].id
-  vpc_security_group_ids = [aws_security_group.app_sg.id]
-  key_name               = aws_key_pair.deployer.key_name
-
-  user_data = <<-EOF
-              #!/bin/bash
-              dnf update -y
-              EOF
-
-  tags = {
-    Name = "${var.environment}-app-server"
-  }
-}
-
-# Upload public SSH key to AWS
-resource "aws_key_pair" "deployer" {
-  key_name   = "${var.environment}-deployer-key"
-  public_key = file("~/.ssh/id_ed25519.pub")
-}
-
 # ==========================================
 # 6. GitHub Actions OIDC Authentication
 # ==========================================
 
-# 1. Register GitHub as an OpenID Connect Identity Provider in AWS IAM
+data "aws_caller_identity" "current" {}
+
 resource "aws_iam_openid_connect_provider" "github" {
-  url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"] # Official GitHub OIDC thumbprint
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
 
   tags = {
     Name      = "${var.environment}-github-oidc-provider"
@@ -331,8 +213,9 @@ resource "aws_iam_openid_connect_provider" "github" {
   }
 }
 
-# 2. Define Trust Policy allowing both terraform-core and terraform-app repos to assume this role
-data "aws_iam_policy_document" "github_actions_assume_role" {
+# ---- terraform-core role ----
+
+data "aws_iam_policy_document" "core_assume_role" {
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
     effect  = "Allow"
@@ -348,31 +231,345 @@ data "aws_iam_policy_document" "github_actions_assume_role" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # Restrict role assumption strictly to your organization's core and app repos
     condition {
-      test     = "StringLike"
+      test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values = [
-        "repo:scLearnAws/terraform-core:*",
-        "repo:scLearnAws/terraform-app:*"
-      ]
+      values   = ["repo:scLearnAws/terraform-core:ref:refs/heads/main"]
     }
   }
 }
 
-# 3. Create the IAM Role for GitHub Actions
-resource "aws_iam_role" "github_actions" {
-  name               = "${var.environment}-github-actions-role"
-  assume_role_policy = data.aws_iam_policy_document.github_actions_assume_role.json
+resource "aws_iam_role" "terraform_core" {
+  name               = "${var.environment}-terraform-core-role"
+  assume_role_policy = data.aws_iam_policy_document.core_assume_role.json
 
   tags = {
-    Name      = "${var.environment}-github-actions-role"
+    Name      = "${var.environment}-terraform-core-role"
     ManagedBy = "Terraform"
   }
 }
 
-# 4. Attach Administrator Access so the CI/CD pipeline can manage AWS resources
-resource "aws_iam_role_policy_attachment" "github_actions_admin" {
-  role       = aws_iam_role.github_actions.name
-  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+# ---- terraform-app role ----
+
+data "aws_iam_policy_document" "app_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:scLearnAws/terraform-app:ref:refs/heads/main"]
+    }
+  }
+}
+
+resource "aws_iam_role" "terraform_app" {
+  name               = "${var.environment}-terraform-app-role"
+  assume_role_policy = data.aws_iam_policy_document.app_assume_role.json
+
+  tags = {
+    Name      = "${var.environment}-terraform-app-role"
+    ManagedBy = "Terraform"
+  }
+}
+
+# ---- Permissions boundary: ceiling for any role terraform-core creates ----
+
+data "aws_iam_policy_document" "lab_permissions_boundary" {
+  statement {
+    sid       = "AllowEverythingByDefault"
+    effect    = "Allow"
+    actions   = ["*"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "DenyIamSelfEscalationPaths"
+    effect = "Deny"
+    actions = [
+      "iam:CreateRole",
+      "iam:DeleteRole",
+      "iam:UpdateAssumeRolePolicy",
+      "iam:PutRolePolicy",
+      "iam:DeleteRolePolicy",
+      "iam:AttachRolePolicy",
+      "iam:DetachRolePolicy",
+      "iam:DeleteRolePermissionsBoundary",
+      "iam:PutRolePermissionsBoundary",
+      "iam:CreateOpenIDConnectProvider",
+      "iam:DeleteOpenIDConnectProvider",
+      "iam:UpdateOpenIDConnectProviderThumbprint",
+      "iam:AddClientIDToOpenIDConnectProvider",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "DenyStateBucketConfigTampering"
+    effect = "Deny"
+    actions = [
+      "s3:PutBucketPolicy",
+      "s3:PutBucketAcl",
+      "s3:PutBucketPublicAccessBlock",
+      "s3:PutEncryptionConfiguration",
+      "s3:PutBucketVersioning",
+      "s3:DeleteBucket",
+    ]
+    resources = [aws_s3_bucket.terraform_state.arn]
+  }
+}
+
+resource "aws_iam_policy" "lab_permissions_boundary" {
+  name   = "${var.environment}-lab-permissions-boundary"
+  policy = data.aws_iam_policy_document.lab_permissions_boundary.json
+}
+
+# ---- terraform-core's IAM management permissions ----
+
+data "aws_iam_policy_document" "terraform_core_iam_management" {
+  statement {
+    sid    = "CreateRoleRequiresBoundary"
+    effect = "Allow"
+    actions = ["iam:CreateRole"]
+    resources = [
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.environment}-*"
+    ]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [aws_iam_policy.lab_permissions_boundary.arn]
+    }
+  }
+
+  statement {
+    sid    = "ManageLabIamRoles"
+    effect = "Allow"
+    actions = [
+      "iam:DeleteRole",
+      "iam:GetRole",
+      "iam:ListRoles",
+      "iam:ListRolePolicies",
+      "iam:ListAttachedRolePolicies",
+      "iam:TagRole",
+      "iam:UntagRole",
+      "iam:PutRolePolicy",
+      "iam:DeleteRolePolicy",
+      "iam:GetRolePolicy",
+      "iam:AttachRolePolicy",
+      "iam:DetachRolePolicy",
+      "iam:UpdateAssumeRolePolicy",
+      "iam:UpdateRole",
+    ]
+    resources = [
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.environment}-*"
+    ]
+  }
+
+  statement {
+    sid    = "ManageLabInstanceProfiles"
+    effect = "Allow"
+    actions = [
+      "iam:CreateInstanceProfile",
+      "iam:DeleteInstanceProfile",
+      "iam:GetInstanceProfile",
+      "iam:AddRoleToInstanceProfile",
+      "iam:RemoveRoleFromInstanceProfile",
+      "iam:TagInstanceProfile",
+    ]
+    resources = [
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:instance-profile/${var.environment}-*"
+    ]
+  }
+
+  statement {
+    sid    = "ReadOidcProvider"
+    effect = "Allow"
+    actions = [
+      "iam:GetOpenIDConnectProvider",
+      "iam:ListOpenIDConnectProviders",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "DenySelfEscalation"
+    effect = "Deny"
+    actions = [
+      "iam:UpdateAssumeRolePolicy",
+      "iam:PutRolePolicy",
+      "iam:DeleteRolePolicy",
+      "iam:AttachRolePolicy",
+      "iam:DetachRolePolicy",
+      "iam:DeleteRole",
+      "iam:UpdateRole",
+    ]
+    resources = [
+      aws_iam_role.terraform_core.arn
+    ]
+  }
+
+  statement {
+    sid    = "DenyBoundaryRemoval"
+    effect = "Deny"
+    actions = [
+      "iam:DeleteRolePermissionsBoundary",
+      "iam:PutRolePermissionsBoundary",
+    ]
+    resources = [
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.environment}-*"
+    ]
+  }
+
+  statement {
+    sid    = "DenyOidcProviderTampering"
+    effect = "Deny"
+    actions = [
+      "iam:CreateOpenIDConnectProvider",
+      "iam:DeleteOpenIDConnectProvider",
+      "iam:UpdateOpenIDConnectProviderThumbprint",
+      "iam:AddClientIDToOpenIDConnectProvider",
+      "iam:RemoveClientIDFromOpenIDConnectProvider",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "terraform_core_iam_management" {
+  name   = "${var.environment}-terraform-core-iam-management"
+  role   = aws_iam_role.terraform_core.id
+  policy = data.aws_iam_policy_document.terraform_core_iam_management.json
+}
+
+resource "aws_iam_role_policy_attachment" "terraform_core_poweruser" {
+  role       = aws_iam_role.terraform_core.name
+  policy_arn = "arn:aws:iam::aws:policy/PowerUserAccess"
+}
+
+# ---- terraform-app's scoped permissions ----
+
+data "aws_iam_policy_document" "terraform_app_permissions" {
+  statement {
+    sid    = "EC2Manage"
+    effect = "Allow"
+    actions = [
+      "ec2:RunInstances",
+      "ec2:TerminateInstances",
+      "ec2:DescribeInstances",
+      "ec2:DescribeInstanceAttribute",
+      "ec2:ModifyInstanceAttribute",
+      "ec2:CreateTags",
+      "ec2:DescribeTags",
+      "ec2:DescribeSecurityGroups",
+      "ec2:DescribeSubnets",
+      "ec2:DescribeVpcs",
+      "ec2:DescribeImages",
+      "ec2:DescribeAvailabilityZones",
+      "ec2:CreateSecurityGroup",
+      "ec2:DeleteSecurityGroup",
+      "ec2:AuthorizeSecurityGroupIngress",
+      "ec2:AuthorizeSecurityGroupEgress",
+      "ec2:RevokeSecurityGroupIngress",
+      "ec2:RevokeSecurityGroupEgress",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "PassSsmInstanceRole"
+    effect    = "Allow"
+    actions   = ["iam:PassRole"]
+    resources = [aws_iam_role.ssm_role.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["ec2.amazonaws.com"]
+    }
+  }
+
+  statement {
+    sid    = "AppStateReadWrite"
+    effect = "Allow"
+    actions = [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+    ]
+    resources = ["${aws_s3_bucket.terraform_state.arn}/terraform-app/*"]
+    }
+
+  statement {
+    sid       = "AppStateBucketList"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.terraform_state.arn]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["terraform-app/*"]
+    }
+  }
+
+  statement {
+    sid       = "CoreStateReadOnly"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.terraform_state.arn}/terraform-core/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "terraform_app_permissions" {
+  name   = "${var.environment}-terraform-app-permissions"
+  role   = aws_iam_role.terraform_app.id
+  policy = data.aws_iam_policy_document.terraform_app_permissions.json
+}
+
+# ==========================================
+# SSM Session Manager Configuration 
+# ==========================================
+
+# 1. IAM Role for EC2 Instances to communicate with SSM
+resource "aws_iam_role" "ssm_role" {
+  name = "${var.environment}-ec2-ssm-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name      = "${var.environment}-ec2-ssm-role"
+    ManagedBy = "Terraform"
+  }
+}
+
+# 2. Attach AWS Managed Policy for SSM to the Role
+resource "aws_iam_role_policy_attachment" "ssm_policy" {
+  role       = aws_iam_role.ssm_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+# 3. Create Instance Profile to attach the IAM Role to EC2 instances
+resource "aws_iam_instance_profile" "ssm_profile" {
+  name = "${var.environment}-ec2-ssm-instance-profile"
+  role = aws_iam_role.ssm_role.name
 }

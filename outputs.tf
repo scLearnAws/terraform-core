@@ -13,11 +13,6 @@ output "private_subnet_ids" {
   value       = aws_subnet.private[*].id
 }
 
-output "nat_public_ip" {
-  description = "Elastic IP attached to NAT Gateway"
-  value       = aws_eip.nat.public_ip
-}
-
 output "web_security_group_id" {
   description = "ID of Public Web Security Group"
   value       = aws_security_group.web_sg.id
@@ -38,12 +33,12 @@ output "web_public_dns" {
   value       = aws_instance.web.public_dns
 }
 
-output "app_private_ip" {
-  description = "Private IP of the App Server"
-  value       = aws_instance.app.private_ip
+output "terraform_core_role_arn" {
+  description = "ARN of the IAM Role assumed by terraform-core's GitHub Actions workflow"
+  value       = aws_iam_role.terraform_core.arn
 }
 
-output "github_actions_role_arn" {
-  description = "ARN of the IAM Role assumed by GitHub Actions via OIDC"
-  value       = aws_iam_role.github_actions.arn
+output "terraform_app_role_arn" {
+  description = "ARN of the IAM Role assumed by terraform-app's GitHub Actions workflow"
+  value       = aws_iam_role.terraform_app.arn
 }

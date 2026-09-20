@@ -34,8 +34,8 @@ variable "availability_zones" {
   default     = ["eu-central-1a", "eu-central-1b"]
 }
 
-variable "admin_ip" {
-  description = "Your personal home IP address for SSH access"
+variable "ami_id" {
+  description = "Pinned AMI ID for EC2 instances. Update deliberately, e.g. every few months for patches."
   type        = string
-  default     = "0.0.0.0/0" # Fallback
+  default     = "ami-05f538da85d563285"
 }
