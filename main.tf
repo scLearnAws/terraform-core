@@ -232,3 +232,61 @@ resource "aws_security_group" "app_sg" {
     Name = "${var.environment}-app-sg"
   }
 }
+
+# ==========================================
+# 5. Compute Tier 
+# ==========================================
+
+# 1. Fetch Latest Amazon Linux 2023 AMI
+data "aws_ami" "amazon_linux_2023" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["al2023-ami-2023.*-x86_64"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
+# 2. Public Web Server
+resource "aws_instance" "web" {
+  ami                    = data.aws_ami.amazon_linux_2023.id
+  instance_type          = "t3.micro"
+  subnet_id              = aws_subnet.public[0].id
+  vpc_security_group_ids = [aws_security_group.web_sg.id]
+
+  user_data = <<-EOF
+              #!/bin/bash
+              dnf update -y
+              dnf install -y httpd
+              systemctl start httpd
+              systemctl enable httpd
+              echo "<h1>Hello from ${var.environment} Public Web Server!</h1>" > /var/www/html/index.html
+              EOF
+
+  tags = {
+    Name = "${var.environment}-web-server"
+  }
+}
+
+# 3. Private App Server
+resource "aws_instance" "app" {
+  ami                    = data.aws_ami.amazon_linux_2023.id
+  instance_type          = "t3.micro"
+  subnet_id              = aws_subnet.private[0].id
+  vpc_security_group_ids = [aws_security_group.app_sg.id]
+
+  user_data = <<-EOF
+              #!/bin/bash
+              dnf update -y
+              EOF
+
+  tags = {
+    Name = "${var.environment}-app-server"
+  }
+}

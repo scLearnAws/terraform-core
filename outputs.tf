@@ -27,3 +27,18 @@ output "app_security_group_id" {
   description = "ID of Private App Security Group"
   value       = aws_security_group.app_sg.id
 }
+
+output "web_public_ip" {
+  description = "Public IP of the Web Server"
+  value       = aws_instance.web.public_ip
+}
+
+output "web_public_dns" {
+  description = "Public DNS of the Web Server"
+  value       = aws_instance.web.public_dns
+}
+
+output "app_private_ip" {
+  description = "Private IP of the App Server"
+  value       = aws_instance.app.private_ip
+}
