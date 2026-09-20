@@ -33,3 +33,9 @@ variable "availability_zones" {
   type        = list(string)
   default     = ["eu-central-1a", "eu-central-1b"]
 }
+
+variable "admin_ip" {
+  description = "Your personal home IP address for SSH access"
+  type        = string
+  default     = "0.0.0.0/0" # Fallback
+}

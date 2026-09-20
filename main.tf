@@ -193,6 +193,14 @@ resource "aws_security_group" "web_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    description = "Allow SSH from anywhere"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["95.105.200.32/32"] # my ip
+  }
+
   egress {
     description = "Allow all outbound traffic"
     from_port   = 0
@@ -216,6 +224,14 @@ resource "aws_security_group" "app_sg" {
     description     = "Allow traffic from Web SG"
     from_port       = 8080
     to_port         = 8080
+    protocol        = "tcp"
+    security_groups = [aws_security_group.web_sg.id]
+  }
+
+  ingress {
+    description     = "Allow SSH from Web SG"
+    from_port       = 22
+    to_port         = 22
     protocol        = "tcp"
     security_groups = [aws_security_group.web_sg.id]
   }
@@ -259,6 +275,7 @@ resource "aws_instance" "web" {
   instance_type          = "t3.micro"
   subnet_id              = aws_subnet.public[0].id
   vpc_security_group_ids = [aws_security_group.web_sg.id]
+  key_name               = aws_key_pair.deployer.key_name
 
   user_data = <<-EOF
               #!/bin/bash
@@ -280,6 +297,7 @@ resource "aws_instance" "app" {
   instance_type          = "t3.micro"
   subnet_id              = aws_subnet.private[0].id
   vpc_security_group_ids = [aws_security_group.app_sg.id]
+  key_name               = aws_key_pair.deployer.key_name
 
   user_data = <<-EOF
               #!/bin/bash
@@ -289,4 +307,10 @@ resource "aws_instance" "app" {
   tags = {
     Name = "${var.environment}-app-server"
   }
+}
+
+# Upload public SSH key to AWS
+resource "aws_key_pair" "deployer" {
+  key_name   = "${var.environment}-deployer-key"
+  public_key = file("~/.ssh/id_ed25519.pub")
 }
