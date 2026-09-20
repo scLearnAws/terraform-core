@@ -42,3 +42,8 @@ output "app_private_ip" {
   description = "Private IP of the App Server"
   value       = aws_instance.app.private_ip
 }
+
+output "github_actions_role_arn" {
+  description = "ARN of the IAM Role assumed by GitHub Actions via OIDC"
+  value       = aws_iam_role.github_actions.arn
+}

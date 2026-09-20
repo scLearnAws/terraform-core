@@ -198,7 +198,7 @@ resource "aws_security_group" "web_sg" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["95.105.200.32/32"] # my ip
+    cidr_blocks = [var.admin_ip] # my ip
   }
 
   egress {
@@ -313,4 +313,66 @@ resource "aws_instance" "app" {
 resource "aws_key_pair" "deployer" {
   key_name   = "${var.environment}-deployer-key"
   public_key = file("~/.ssh/id_ed25519.pub")
+}
+
+# ==========================================
+# 6. GitHub Actions OIDC Authentication
+# ==========================================
+
+# 1. Register GitHub as an OpenID Connect Identity Provider in AWS IAM
+resource "aws_iam_openid_connect_provider" "github" {
+  url             = "https://token.actions.githubusercontent.com"
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"] # Official GitHub OIDC thumbprint
+
+  tags = {
+    Name      = "${var.environment}-github-oidc-provider"
+    ManagedBy = "Terraform"
+  }
+}
+
+# 2. Define Trust Policy allowing both terraform-core and terraform-app repos to assume this role
+data "aws_iam_policy_document" "github_actions_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    # Restrict role assumption strictly to your organization's core and app repos
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values = [
+        "repo:scLearnAws/terraform-core:*",
+        "repo:scLearnAws/terraform-app:*"
+      ]
+    }
+  }
+}
+
+# 3. Create the IAM Role for GitHub Actions
+resource "aws_iam_role" "github_actions" {
+  name               = "${var.environment}-github-actions-role"
+  assume_role_policy = data.aws_iam_policy_document.github_actions_assume_role.json
+
+  tags = {
+    Name      = "${var.environment}-github-actions-role"
+    ManagedBy = "Terraform"
+  }
+}
+
+# 4. Attach Administrator Access so the CI/CD pipeline can manage AWS resources
+resource "aws_iam_role_policy_attachment" "github_actions_admin" {
+  role       = aws_iam_role.github_actions.name
+  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
 }
