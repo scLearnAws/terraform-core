@@ -234,7 +234,7 @@ data "aws_iam_policy_document" "core_assume_role" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:scLearnAws/terraform-core:ref:refs/heads/main"]
+      values   = ["repo:scLearnAws/terraform-app:environment:production"]
     }
   }
 }
@@ -270,7 +270,7 @@ data "aws_iam_policy_document" "app_assume_role" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:scLearnAws/terraform-app:ref:refs/heads/main"]
+      values   = ["repo:scLearnAws/terraform-app:environment:production"]
     }
   }
 }
@@ -340,8 +340,8 @@ resource "aws_iam_policy" "lab_permissions_boundary" {
 
 data "aws_iam_policy_document" "terraform_core_iam_management" {
   statement {
-    sid    = "CreateRoleRequiresBoundary"
-    effect = "Allow"
+    sid     = "CreateRoleRequiresBoundary"
+    effect  = "Allow"
     actions = ["iam:CreateRole"]
     resources = [
       "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.environment}-*"
@@ -502,12 +502,12 @@ data "aws_iam_policy_document" "terraform_app_permissions" {
     sid    = "AppStateReadWrite"
     effect = "Allow"
     actions = [
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:DeleteObject",
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
     ]
     resources = ["${aws_s3_bucket.terraform_state.arn}/terraform-app/*"]
-    }
+  }
 
   statement {
     sid       = "AppStateBucketList"
