@@ -45,12 +45,27 @@ variable "github_org" {
   default = "scLearnAws"
 }
 
+variable "github_org_id" {
+  type    = string
+  default = "328701079"
+}
+
 variable "core_repo" {
   type    = string
-  default = "terraform-core" # <-- your actual core repo name
+  default = "terraform-core"
+}
+
+variable "core_repo_id" {
+  type    = string
+  default = "1368342384"
 }
 
 variable "app_repo" {
   type    = string
   default = "terraform-app"
+}
+
+variable "app_repo_id" {
+  type    = string
+  default = "1368341777"
 }

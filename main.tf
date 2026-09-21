@@ -215,7 +215,6 @@ resource "aws_iam_openid_connect_provider" "github" {
 
 # ---- terraform-core role ----
 
-# ---- terraform-core role ----
 data "aws_iam_policy_document" "core_assume_role" {
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -236,9 +235,9 @@ data "aws_iam_policy_document" "core_assume_role" {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
       values = [
-        "repo:${var.github_org}/${var.core_repo}:pull_request",
-        "repo:${var.github_org}/${var.core_repo}:ref:refs/heads/main",
-        "repo:${var.github_org}/${var.core_repo}:environment:production",
+        "repo:${var.github_org}@${var.github_org_id}/${var.core_repo}@${var.core_repo_id}:pull_request",
+        "repo:${var.github_org}@${var.github_org_id}/${var.core_repo}@${var.core_repo_id}:ref:refs/heads/main",
+        "repo:${var.github_org}@${var.github_org_id}/${var.core_repo}@${var.core_repo_id}:environment:production",
       ]
     }
   }
@@ -275,9 +274,10 @@ data "aws_iam_policy_document" "app_assume_role" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values = ["repo:${var.github_org}/${var.app_repo}:pull_request",
-        "repo:${var.github_org}/${var.app_repo}:ref:refs/heads/main",
-        "repo:${var.github_org}/${var.app_repo}:environment:production"
+      values = [
+        "repo:${var.github_org}@${var.github_org_id}/${var.app_repo}@${var.app_repo_id}:pull_request",
+        "repo:${var.github_org}@${var.github_org_id}/${var.app_repo}@${var.app_repo_id}:ref:refs/heads/main",
+        "repo:${var.github_org}@${var.github_org_id}/${var.app_repo}@${var.app_repo_id}:environment:production",
       ]
     }
   }
