@@ -483,6 +483,7 @@ data "aws_iam_policy_document" "terraform_app_permissions" {
       "ec2:DescribeSubnets",
       "ec2:DescribeVpcs",
       "ec2:DescribeImages",
+      "ec2:DescribeInstanceTypes",
       "ec2:DescribeAvailabilityZones",
       "ec2:CreateSecurityGroup",
       "ec2:DeleteSecurityGroup",
