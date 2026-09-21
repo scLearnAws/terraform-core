@@ -475,6 +475,7 @@ data "aws_iam_policy_document" "terraform_app_permissions" {
       "ec2:RunInstances",
       "ec2:TerminateInstances",
       "ec2:DescribeInstances",
+      "ec2:DescribeVolumes",
       "ec2:DescribeInstanceAttribute",
       "ec2:ModifyInstanceAttribute",
       "ec2:CreateTags",
