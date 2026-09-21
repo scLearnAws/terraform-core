@@ -215,6 +215,7 @@ resource "aws_iam_openid_connect_provider" "github" {
 
 # ---- terraform-core role ----
 
+# ---- terraform-core role ----
 data "aws_iam_policy_document" "core_assume_role" {
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -232,9 +233,13 @@ data "aws_iam_policy_document" "core_assume_role" {
     }
 
     condition {
-      test     = "StringEquals"
+      test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:scLearnAws/terraform-app:environment:production"]
+      values = [
+        "repo:${var.github_org}/${var.core_repo}:pull_request",
+        "repo:${var.github_org}/${var.core_repo}:ref:refs/heads/main",
+        "repo:${var.github_org}/${var.core_repo}:environment:production",
+      ]
     }
   }
 }
@@ -268,9 +273,12 @@ data "aws_iam_policy_document" "app_assume_role" {
     }
 
     condition {
-      test     = "StringEquals"
+      test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:scLearnAws/terraform-app:environment:production"]
+      values = ["repo:${var.github_org}/${var.app_repo}:pull_request",
+        "repo:${var.github_org}/${var.app_repo}:ref:refs/heads/main",
+        "repo:${var.github_org}/${var.app_repo}:environment:production"
+      ]
     }
   }
 }

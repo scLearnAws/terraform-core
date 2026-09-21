@@ -39,3 +39,18 @@ variable "ami_id" {
   type        = string
   default     = "ami-05f538da85d563285"
 }
+
+variable "github_org" {
+  type    = string
+  default = "scLearnAws"
+}
+
+variable "core_repo" {
+  type    = string
+  default = "terraform-core" # <-- your actual core repo name
+}
+
+variable "app_repo" {
+  type    = string
+  default = "terraform-app"
+}
