@@ -36,6 +36,42 @@ resource "aws_s3_bucket_public_access_block" "terraform_state_public_block" {
   restrict_public_buckets = true
 }
 
+resource "aws_s3_bucket_ownership_controls" "terraform_state" {
+  bucket = aws_s3_bucket.terraform_state.id
+
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}
+
+resource "aws_s3_bucket_policy" "terraform_state_tls_only" {
+  bucket = aws_s3_bucket.terraform_state.id
+  policy = data.aws_iam_policy_document.terraform_state_tls_only.json
+}
+
+data "aws_iam_policy_document" "terraform_state_tls_only" {
+  statement {
+    sid     = "DenyInsecureTransport"
+    effect  = "Deny"
+    actions = ["s3:*"]
+    resources = [
+      aws_s3_bucket.terraform_state.arn,
+      "${aws_s3_bucket.terraform_state.arn}/*",
+    ]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
 # 1. Custom VPC
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
@@ -174,6 +210,14 @@ resource "aws_instance" "web" {
 
 data "aws_caller_identity" "current" {}
 
+resource "aws_s3_account_public_access_block" "account" {
+  account_id              = data.aws_caller_identity.current.account_id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
 resource "aws_iam_openid_connect_provider" "github" {
   url            = "https://token.actions.githubusercontent.com"
   client_id_list = ["sts.amazonaws.com"]
@@ -206,8 +250,6 @@ data "aws_iam_policy_document" "core_assume_role" {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
       values = [
-        "repo:${var.github_org}@${var.github_org_id}/${var.core_repo}@${var.core_repo_id}:pull_request",
-        "repo:${var.github_org}@${var.github_org_id}/${var.core_repo}@${var.core_repo_id}:ref:refs/heads/main",
         "repo:${var.github_org}@${var.github_org_id}/${var.core_repo}@${var.core_repo_id}:environment:production",
       ]
     }
@@ -246,8 +288,6 @@ data "aws_iam_policy_document" "app_assume_role" {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
       values = [
-        "repo:${var.github_org}@${var.github_org_id}/${var.app_repo}@${var.app_repo_id}:pull_request",
-        "repo:${var.github_org}@${var.github_org_id}/${var.app_repo}@${var.app_repo_id}:ref:refs/heads/main",
         "repo:${var.github_org}@${var.github_org_id}/${var.app_repo}@${var.app_repo_id}:environment:production",
       ]
     }
@@ -255,8 +295,9 @@ data "aws_iam_policy_document" "app_assume_role" {
 }
 
 resource "aws_iam_role" "terraform_app" {
-  name               = "${var.environment}-terraform-app-role"
-  assume_role_policy = data.aws_iam_policy_document.app_assume_role.json
+  name                 = "${var.environment}-terraform-app-role"
+  assume_role_policy   = data.aws_iam_policy_document.app_assume_role.json
+  permissions_boundary = aws_iam_policy.lab_permissions_boundary.arn
 
   tags = {
     Name      = "${var.environment}-terraform-app-role"
@@ -268,9 +309,88 @@ resource "aws_iam_role" "terraform_app" {
 
 data "aws_iam_policy_document" "lab_permissions_boundary" {
   statement {
-    sid       = "AllowEverythingByDefault"
+    sid    = "AllowWorkloadEc2Actions"
+    effect = "Allow"
+    actions = [
+      "ec2:RunInstances",
+      "ec2:TerminateInstances",
+      "ec2:ModifyInstanceAttribute",
+      "ec2:CreateTags",
+      "ec2:DeleteTags",
+      "ec2:CreateSecurityGroup",
+      "ec2:DeleteSecurityGroup",
+      "ec2:AuthorizeSecurityGroupIngress",
+      "ec2:AuthorizeSecurityGroupEgress",
+      "ec2:RevokeSecurityGroupIngress",
+      "ec2:RevokeSecurityGroupEgress",
+      "ec2:Describe*",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "AllowAppState"
     effect    = "Allow"
-    actions   = ["*"]
+    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    resources = ["${aws_s3_bucket.terraform_state.arn}/terraform-app/*"]
+  }
+
+  statement {
+    sid       = "ListAppState"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.terraform_state.arn]
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["terraform-app/*"]
+    }
+  }
+
+  statement {
+    sid       = "AllowPassSsmRoleToEc2"
+    effect    = "Allow"
+    actions   = ["iam:PassRole"]
+    resources = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.environment}-ec2-ssm-role"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["ec2.amazonaws.com"]
+    }
+  }
+
+  statement {
+    sid    = "AllowSsmInstanceCore"
+    effect = "Allow"
+    actions = [
+      "ssm:DescribeAssociation",
+      "ssm:GetDeployablePatchSnapshotForInstance",
+      "ssm:GetDocument",
+      "ssm:DescribeDocument",
+      "ssm:GetManifest",
+      "ssm:GetParameter",
+      "ssm:GetParameters",
+      "ssm:ListAssociations",
+      "ssm:ListInstanceAssociations",
+      "ssm:PutInventory",
+      "ssm:PutComplianceItems",
+      "ssm:PutConfigurePackageResult",
+      "ssm:UpdateAssociationStatus",
+      "ssm:UpdateInstanceAssociationStatus",
+      "ssm:UpdateInstanceInformation",
+      "ssmmessages:CreateControlChannel",
+      "ssmmessages:CreateDataChannel",
+      "ssmmessages:OpenControlChannel",
+      "ssmmessages:OpenDataChannel",
+      "ec2messages:AcknowledgeMessage",
+      "ec2messages:DeleteMessage",
+      "ec2messages:FailMessage",
+      "ec2messages:GetEndpoint",
+      "ec2messages:GetMessages",
+      "ec2messages:SendReply",
+    ]
     resources = ["*"]
   }
 
@@ -301,6 +421,7 @@ data "aws_iam_policy_document" "lab_permissions_boundary" {
     actions = [
       "s3:PutBucketPolicy",
       "s3:PutBucketAcl",
+      "s3:PutBucketOwnershipControls",
       "s3:PutBucketPublicAccessBlock",
       "s3:PutEncryptionConfiguration",
       "s3:PutBucketVersioning",
@@ -338,7 +459,6 @@ data "aws_iam_policy_document" "terraform_core_iam_management" {
     actions = [
       "iam:DeleteRole",
       "iam:GetRole",
-      "iam:ListRoles",
       "iam:ListRolePolicies",
       "iam:ListAttachedRolePolicies",
       "iam:TagRole",
@@ -349,7 +469,6 @@ data "aws_iam_policy_document" "terraform_core_iam_management" {
       "iam:AttachRolePolicy",
       "iam:DetachRolePolicy",
       "iam:UpdateAssumeRolePolicy",
-      "iam:UpdateRole",
     ]
     resources = [
       "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.environment}-*"
@@ -366,6 +485,7 @@ data "aws_iam_policy_document" "terraform_core_iam_management" {
       "iam:AddRoleToInstanceProfile",
       "iam:RemoveRoleFromInstanceProfile",
       "iam:TagInstanceProfile",
+      "iam:UntagInstanceProfile",
     ]
     resources = [
       "arn:aws:iam::${data.aws_caller_identity.current.account_id}:instance-profile/${var.environment}-*"
@@ -383,13 +503,58 @@ data "aws_iam_policy_document" "terraform_core_iam_management" {
   }
 
   statement {
-    sid    = "ReadOidcProvider"
+    sid       = "PassSsmRoleToEc2"
+    effect    = "Allow"
+    actions   = ["iam:PassRole"]
+    resources = [aws_iam_role.ssm_role.arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["ec2.amazonaws.com"]
+    }
+  }
+
+  statement {
+    sid       = "ListOidcProviders"
+    effect    = "Allow"
+    actions   = ["iam:ListOpenIDConnectProviders"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "ReadGitHubOidcProvider"
     effect = "Allow"
     actions = [
       "iam:GetOpenIDConnectProvider",
-      "iam:ListOpenIDConnectProviders",
+      "iam:ListOpenIDConnectProviderTags",
     ]
+    resources = [
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/token.actions.githubusercontent.com"
+    ]
+  }
+
+  statement {
+    sid       = "CreateGitHubOidcProvider"
+    effect    = "Allow"
+    actions   = ["iam:CreateOpenIDConnectProvider"]
     resources = ["*"]
+  }
+
+  statement {
+    sid    = "ManageGitHubOidcProvider"
+    effect = "Allow"
+    actions = [
+      "iam:DeleteOpenIDConnectProvider",
+      "iam:UpdateOpenIDConnectProviderThumbprint",
+      "iam:AddClientIDToOpenIDConnectProvider",
+      "iam:RemoveClientIDFromOpenIDConnectProvider",
+      "iam:TagOpenIDConnectProvider",
+      "iam:UntagOpenIDConnectProvider",
+    ]
+    resources = [
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/token.actions.githubusercontent.com"
+    ]
   }
 
   statement {
@@ -410,29 +575,27 @@ data "aws_iam_policy_document" "terraform_core_iam_management" {
   }
 
   statement {
-    sid    = "DenyBoundaryRemoval"
-    effect = "Deny"
-    actions = [
-      "iam:DeleteRolePermissionsBoundary",
-      "iam:PutRolePermissionsBoundary",
-    ]
+    sid       = "AssignLabPermissionsBoundary"
+    effect    = "Allow"
+    actions   = ["iam:PutRolePermissionsBoundary"]
+    resources = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.environment}-*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [aws_iam_policy.lab_permissions_boundary.arn]
+    }
+  }
+
+  statement {
+    sid     = "DenyBoundaryRemoval"
+    effect  = "Deny"
+    actions = ["iam:DeleteRolePermissionsBoundary"]
     resources = [
       "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.environment}-*"
     ]
   }
 
-  statement {
-    sid    = "DenyOidcProviderTampering"
-    effect = "Deny"
-    actions = [
-      "iam:CreateOpenIDConnectProvider",
-      "iam:DeleteOpenIDConnectProvider",
-      "iam:UpdateOpenIDConnectProviderThumbprint",
-      "iam:AddClientIDToOpenIDConnectProvider",
-      "iam:RemoveClientIDFromOpenIDConnectProvider",
-    ]
-    resources = ["*"]
-  }
 }
 
 resource "aws_iam_role_policy" "terraform_core_iam_management" {
@@ -441,9 +604,120 @@ resource "aws_iam_role_policy" "terraform_core_iam_management" {
   policy = data.aws_iam_policy_document.terraform_core_iam_management.json
 }
 
-resource "aws_iam_role_policy_attachment" "terraform_core_poweruser" {
-  role       = aws_iam_role.terraform_core.name
-  policy_arn = "arn:aws:iam::aws:policy/PowerUserAccess"
+# ---- terraform-core AWS resource permissions ----
+
+data "aws_iam_policy_document" "terraform_core_aws_permissions" {
+  statement {
+    sid    = "ManageCoreNetworkAndInstance"
+    effect = "Allow"
+    actions = [
+      "ec2:CreateVpc",
+      "ec2:DeleteVpc",
+      "ec2:ModifyVpcAttribute",
+      "ec2:CreateInternetGateway",
+      "ec2:DeleteInternetGateway",
+      "ec2:AttachInternetGateway",
+      "ec2:DetachInternetGateway",
+      "ec2:CreateSubnet",
+      "ec2:DeleteSubnet",
+      "ec2:ModifySubnetAttribute",
+      "ec2:CreateRouteTable",
+      "ec2:DeleteRouteTable",
+      "ec2:CreateRoute",
+      "ec2:DeleteRoute",
+      "ec2:AssociateRouteTable",
+      "ec2:DisassociateRouteTable",
+      "ec2:CreateSecurityGroup",
+      "ec2:DeleteSecurityGroup",
+      "ec2:AuthorizeSecurityGroupIngress",
+      "ec2:AuthorizeSecurityGroupEgress",
+      "ec2:RevokeSecurityGroupIngress",
+      "ec2:RevokeSecurityGroupEgress",
+      "ec2:RunInstances",
+      "ec2:TerminateInstances",
+      "ec2:ModifyInstanceAttribute",
+      "ec2:CreateTags",
+      "ec2:DeleteTags",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "ReadCoreEc2Resources"
+    effect    = "Allow"
+    actions   = ["ec2:Describe*"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "CreateStateBucket"
+    effect    = "Allow"
+    actions   = ["s3:CreateBucket"]
+    resources = ["arn:aws:s3:::tf-state-core-*"]
+  }
+
+  statement {
+    sid    = "ManageAccountS3PublicAccessBlock"
+    effect = "Allow"
+    actions = [
+      "s3:GetAccountPublicAccessBlock",
+      "s3:PutAccountPublicAccessBlock",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "ManageStateBucket"
+    effect = "Allow"
+    actions = [
+      "s3:GetBucket*",
+      "s3:PutBucketTagging",
+      "s3:GetBucketVersioning",
+      "s3:PutBucketVersioning",
+      "s3:GetEncryptionConfiguration",
+      "s3:PutEncryptionConfiguration",
+      "s3:GetPublicAccessBlock",
+      "s3:PutPublicAccessBlock",
+      "s3:GetBucketOwnershipControls",
+      "s3:PutBucketOwnershipControls",
+      "s3:GetBucketPolicy",
+      "s3:PutBucketPolicy",
+    ]
+    resources = [aws_s3_bucket.terraform_state.arn]
+  }
+
+  statement {
+    sid       = "ListCoreTerraformState"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.terraform_state.arn]
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["terraform-core/*"]
+    }
+  }
+
+  statement {
+    sid    = "ManageCoreTerraformState"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+    ]
+    resources = [
+      "${aws_s3_bucket.terraform_state.arn}/terraform-core/terraform.tfstate",
+      "${aws_s3_bucket.terraform_state.arn}/terraform-core/terraform.tfstate.tflock",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "terraform_core_aws_permissions" {
+  name   = "${var.environment}-terraform-core-aws-permissions"
+  role   = aws_iam_role.terraform_core.id
+  policy = data.aws_iam_policy_document.terraform_core_aws_permissions.json
 }
 
 # ---- terraform-app's scoped permissions ----
@@ -512,13 +786,6 @@ data "aws_iam_policy_document" "terraform_app_permissions" {
       values   = ["terraform-app/*"]
     }
   }
-
-  statement {
-    sid       = "CoreStateReadOnly"
-    effect    = "Allow"
-    actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.terraform_state.arn}/terraform-core/*"]
-  }
 }
 
 resource "aws_iam_role_policy" "terraform_app_permissions" {
@@ -533,7 +800,8 @@ resource "aws_iam_role_policy" "terraform_app_permissions" {
 
 # 1. IAM Role for EC2 Instances to communicate with SSM
 resource "aws_iam_role" "ssm_role" {
-  name = "${var.environment}-ec2-ssm-role"
+  name                 = "${var.environment}-ec2-ssm-role"
+  permissions_boundary = aws_iam_policy.lab_permissions_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
