@@ -56,7 +56,7 @@ resource "aws_internet_gateway" "gw" {
   }
 }
 
-# 3. Public Subnets (Span 2 Availability Zones)
+# 3. Public Subnets
 resource "aws_subnet" "public" {
   count                   = length(var.public_subnet_cidrs)
   vpc_id                  = aws_vpc.main.id
@@ -70,7 +70,7 @@ resource "aws_subnet" "public" {
   }
 }
 
-# 4. Private Subnets (Span 2 Availability Zones)
+# 4. Private Subnets
 resource "aws_subnet" "private" {
   count             = length(var.private_subnet_cidrs)
   vpc_id            = aws_vpc.main.id
@@ -105,10 +105,10 @@ resource "aws_route_table_association" "public" {
 }
 
 # ==========================================
-# 4. Security Groups 
+# 7. Security Groups
 # ==========================================
 
-# Public Web / Load Balancer Security Group
+# Public Web Security Group
 resource "aws_security_group" "web_sg" {
   name        = "${var.environment}-web-sg"
   description = "Allow inbound HTTP/HTTPS traffic from anywhere"
@@ -143,7 +143,7 @@ resource "aws_security_group" "web_sg" {
   }
 }
 
-# Private Application / Database Security Group
+# Private Application Security Group
 resource "aws_security_group" "app_sg" {
   name        = "${var.environment}-app-sg"
   description = "Allow inbound traffic only from Web Security Group"
@@ -172,10 +172,10 @@ resource "aws_security_group" "app_sg" {
 }
 
 # ==========================================
-# 5. Compute Tier 
+# 8. Compute Tier
 # ==========================================
 
-# 2. Public Web Server
+# Public Web Server
 resource "aws_instance" "web" {
   ami                    = var.ami_id
   instance_type          = "t3.micro"
@@ -187,8 +187,7 @@ resource "aws_instance" "web" {
               #!/bin/bash
               dnf update -y
               dnf install -y httpd
-              systemctl start httpd
-              systemctl enable httpd
+              systemctl enable --now httpd
               echo "<h1>Hello from ${var.environment} Public Web Server!</h1>" > /var/www/html/index.html
               EOF
 
@@ -198,7 +197,7 @@ resource "aws_instance" "web" {
 }
 
 # ==========================================
-# 6. GitHub Actions OIDC Authentication
+# 9. GitHub Actions OIDC Authentication
 # ==========================================
 
 data "aws_caller_identity" "current" {}
