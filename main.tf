@@ -143,34 +143,6 @@ resource "aws_security_group" "web_sg" {
   }
 }
 
-# Private Application Security Group
-resource "aws_security_group" "app_sg" {
-  name        = "${var.environment}-app-sg"
-  description = "Allow inbound traffic only from Web Security Group"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    description     = "Allow traffic from Web SG"
-    from_port       = 8080
-    to_port         = 8080
-    protocol        = "tcp"
-    security_groups = [aws_security_group.web_sg.id]
-  }
-
-
-  egress {
-    description = "Allow all outbound traffic"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "${var.environment}-app-sg"
-  }
-}
-
 # ==========================================
 # 8. Compute Tier
 # ==========================================
