@@ -401,6 +401,16 @@ data "aws_iam_policy_document" "terraform_core_iam_management" {
   }
 
   statement {
+    sid    = "ReadLabPermissionsBoundary"
+    effect = "Allow"
+    actions = [
+      "iam:GetPolicy",
+      "iam:GetPolicyVersion",
+    ]
+    resources = [aws_iam_policy.lab_permissions_boundary.arn]
+  }
+
+  statement {
     sid    = "ReadOidcProvider"
     effect = "Allow"
     actions = [
